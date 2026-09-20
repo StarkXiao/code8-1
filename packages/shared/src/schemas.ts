@@ -209,6 +209,21 @@ export const updateTranscriptSchema = z.object({
   transcriptStatus: z.enum(['none', 'pending', 'done', 'failed']).optional(),
 });
 
+/** 分句时间轴：每句话落在音频的一个毫秒区间内，区间按顺序不重叠 */
+export const transcriptSentenceSchema = z.object({
+  id: z.string().max(40).optional(),
+  startMs: z.number().int().min(0).max(24 * 3600 * 1000),
+  endMs: z.number().int().min(0).max(24 * 3600 * 1000),
+  text: z.string().trim().min(1, '句子不能为空').max(2000),
+  source: z.enum(['asr', 'aligned', 'manual']).optional(),
+});
+
+export const saveSentencesSchema = z.object({
+  sentences: z.array(transcriptSentenceSchema).min(1, '请至少保留一句话').max(500),
+  /** 保存分句时是否把拼接后的文本一并写回 transcript（默认写回，保持一致） */
+  syncTranscript: z.boolean().optional(),
+});
+
 /* ------------------------------------------------------------------ */
 /* 待澄清条目（核心）                                                  */
 /* ------------------------------------------------------------------ */

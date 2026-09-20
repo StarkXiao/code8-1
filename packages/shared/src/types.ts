@@ -12,6 +12,7 @@ import type {
   VersionStatus,
   WorkspaceRole,
 } from './enums';
+import type { TranscriptSentence } from './transcript';
 
 /**
  * 可复做规格：把一句模糊口述变成"别人照着也能做出来"的结构化结论。
@@ -173,6 +174,8 @@ export interface AudioAttachmentDto {
   sha256: string;
   transcript: string | null;
   transcriptStatus: TranscriptStatus;
+  /** 分句与时间轴对齐结果；没有分句时为 null */
+  sentences?: TranscriptSentence[] | null;
   createdAt: string;
   url: string;
 }

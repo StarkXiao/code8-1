@@ -4,8 +4,19 @@ import {
   audioQuerySchema,
   createClipSchema,
   isAllowedAudioMime,
+  saveSentencesSchema,
   updateTranscriptSchema,
   uploadAudioFieldsSchema,
+} from '@froa/shared';
+import {
+  alignAsrSegments,
+  alignPlainText,
+  ensureSentenceIds,
+  joinSentences,
+  normalizeSentences,
+  splitSentences,
+  validateSentenceBoundaries,
+  type TranscriptSentence,
 } from '@froa/shared';
 import { prisma } from '../db/client';
 import { ApiError, notFound } from '../lib/errors';
@@ -229,11 +240,21 @@ audioRouter.post(
         ? await provider.transcribe({ path: absolutePath, mimeType: audio.mimeType })
         : { text: '', segments: [], empty: true };
 
+      // 自动分句 + 时间轴对齐：ASR 有时间戳段就贴着段落，没有就按字符均摊。
+      // manual 驱动（empty）不动数据，等整理者录入文本后走"重新分句"。
+      const aligned = result.empty
+        ? null
+        : result.segments.length
+          ? alignAsrSegments(result.segments, audio.durationMs)
+          : alignPlainText(result.text, audio.durationMs);
+      const sentences = aligned && aligned.length ? ensureSentenceIds(aligned) : null;
+
       const updated = await prisma.audioAttachment.update({
         where: { id: audio.id },
         data: {
           transcript: result.empty ? audio.transcript : result.text,
           transcriptStatus: 'done',
+          ...(sentences ? { sentences: stringifyJson(sentences) } : {}),
         },
       });
 
@@ -241,6 +262,7 @@ audioRouter.post(
         audio: toAudioDto(updated),
         provider: provider.name,
         segments: result.segments,
+        sentences,
         needsManualInput: result.empty,
         hint: result.empty
           ? '当前转写驱动为 manual：请在上方文本框中人工录入这段口述'
@@ -268,11 +290,120 @@ audioRouter.patch(
       transcriptStatus?: string;
     };
 
-    const audio = await prisma.audioAttachment.update({
+    const audio = await prisma.audioAttachment.findUnique({ where: { id: audioId! } });
+    if (!audio) throw new ApiError('AUDIO_NOT_FOUND');
+
+    // 保存整段文本时顺手分句均摊：纯人工录入也有时间轴初稿可拖。
+    // 文本被清空则分句一并清空，避免残留与文本对不上的句子。
+    const pieces = splitSentences(transcript);
+    const sentences = pieces.length
+      ? ensureSentenceIds(alignPlainText(transcript, audio.durationMs))
+      : null;
+
+    const updated = await prisma.audioAttachment.update({
       where: { id: audioId! },
-      data: { transcript, transcriptStatus: transcriptStatus ?? 'done' },
+      data: {
+        transcript,
+        transcriptStatus: transcriptStatus ?? 'done',
+        sentences: sentences ? stringifyJson(sentences) : null,
+      },
     });
-    send(res, toAudioDto(audio));
+    send(res, toAudioDto(updated));
+  }),
+);
+
+/* ------------------------------------------------------------------ */
+/* 分句与时间轴                                                         */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 按当前整段转写文本重新分句并均摊到音频时长。
+ * 用于：人工改完文本后想回到"自动落点"的初始状态。
+ * 会覆盖人工拖过的边界，所以前端调用前要先确认。
+ */
+audioRouter.post(
+  '/audio/:audioId/sentences/resegment',
+  asyncHandler(async (req, res) => {
+    const { audioId } = req.params;
+    await assertAudioRole(req.auth!.userId, audioId!, 'contributor');
+
+    const audio = await prisma.audioAttachment.findUnique({ where: { id: audioId! } });
+    if (!audio) throw new ApiError('AUDIO_NOT_FOUND');
+
+    const transcript = audio.transcript ?? '';
+    if (!splitSentences(transcript).length) {
+      throw new ApiError('VALIDATION_FAILED', '还没有转写文本，请先录入或自动转写后再分句');
+    }
+
+    const sentences = ensureSentenceIds(alignPlainText(transcript, audio.durationMs));
+    const updated = await prisma.audioAttachment.update({
+      where: { id: audio.id },
+      data: { sentences: stringifyJson(sentences) },
+    });
+
+    send(res, { audio: toAudioDto(updated), sentences });
+  }),
+);
+
+/**
+ * 保存整理者在波形上拖拽修正（以及拆分/合并/改字）后的分句结果。
+ * 入库前做强校验：区间不越界、不倒挂、不重叠、句子非空。
+ */
+audioRouter.put(
+  '/audio/:audioId/sentences',
+  validateBody(saveSentencesSchema),
+  asyncHandler(async (req, res) => {
+    const { audioId } = req.params;
+    const access = await assertAudioRole(req.auth!.userId, audioId!, 'contributor');
+
+    const audio = await prisma.audioAttachment.findUnique({ where: { id: audioId! } });
+    if (!audio) throw new ApiError('AUDIO_NOT_FOUND');
+
+    const body = req.body as {
+      sentences: TranscriptSentence[];
+      syncTranscript?: boolean;
+    };
+
+    const boundaryErrors = validateSentenceBoundaries(body.sentences, audio.durationMs);
+    if (boundaryErrors.length) {
+      throw new ApiError('VALIDATION_FAILED', boundaryErrors[0]!.message, {
+        boundaryErrors,
+      });
+    }
+
+    // 再过一遍规整器兜底（取整、source 标注、剥掉前端临时 id 的语义风险）
+    const normalized = ensureSentenceIds(
+      normalizeSentences(
+        body.sentences.map((sentence) => ({
+          startMs: sentence.startMs,
+          endMs: sentence.endMs,
+          text: sentence.text.trim(),
+          source: 'manual' as const,
+        })),
+        audio.durationMs,
+      ),
+    );
+
+    const syncTranscript = body.syncTranscript !== false;
+    const updated = await prisma.audioAttachment.update({
+      where: { id: audio.id },
+      data: {
+        sentences: stringifyJson(normalized),
+        transcriptStatus: 'done',
+        ...(syncTranscript ? { transcript: joinSentences(normalized) } : {}),
+      },
+    });
+
+    await logActivity({
+      workspaceId: access.workspaceId,
+      actorId: req.auth!.userId,
+      action: 'audio.sentences.update',
+      entityType: 'audio_attachment',
+      entityId: audio.id,
+      after: { count: normalized.length },
+    });
+
+    send(res, { audio: toAudioDto(updated), sentences: normalized });
   }),
 );
 

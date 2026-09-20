@@ -19,6 +19,7 @@ import type {
   RecipeVersionDto,
   ResolvedSpec,
   StepDto,
+  TranscriptSentence,
   UserDto,
   VagueCategory,
   VagueItemDto,
@@ -176,11 +177,26 @@ export const audioApi = {
       audio: AudioAttachmentDto;
       provider: string;
       segments: { startMs: number; endMs: number; text: string }[];
+      sentences: TranscriptSentence[] | null;
       needsManualInput: boolean;
       hint?: string;
     }>(api.post(`/audio/${audioId}/transcribe`)),
   updateTranscript: (audioId: string, transcript: string, transcriptStatus?: string) =>
     unwrap<AudioAttachmentDto>(api.patch(`/audio/${audioId}/transcript`, { transcript, transcriptStatus })),
+  /** 按整段转写文本重新分句、均摊到音频（会覆盖人工拖过的边界） */
+  resegment: (audioId: string) =>
+    unwrap<{ audio: AudioAttachmentDto; sentences: TranscriptSentence[] }>(
+      api.post(`/audio/${audioId}/sentences/resegment`),
+    ),
+  /** 保存拖拽修正 / 拆分合并后的分句时间轴 */
+  saveSentences: (
+    audioId: string,
+    sentences: Array<Omit<TranscriptSentence, 'source'> & { source?: TranscriptSentence['source'] }>,
+    syncTranscript = true,
+  ) =>
+    unwrap<{ audio: AudioAttachmentDto; sentences: TranscriptSentence[] }>(
+      api.put(`/audio/${audioId}/sentences`, { sentences, syncTranscript }),
+    ),
   createClip: (audioId: string, input: { startMs: number; endMs: number; label?: string | null }) =>
     unwrap<AudioClipDto>(api.post(`/audio/${audioId}/clips`, input)),
   remove: (audioId: string) => unwrap<{ removed: string }>(api.delete(`/audio/${audioId}`)),

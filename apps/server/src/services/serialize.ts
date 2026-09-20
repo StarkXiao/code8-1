@@ -10,6 +10,7 @@ import type {
   RecipeVersionDto,
   ResolvedSpec,
   StepDto,
+  TranscriptSentence,
   UserDto,
   VagueItemDto,
   VerificationRunDto,
@@ -193,6 +194,7 @@ export function toAudioDto(audio: {
   sha256: string;
   transcript: string | null;
   transcriptStatus: string;
+  sentences?: string | null;
   createdAt: Date;
 }): AudioAttachmentDto {
   return {
@@ -208,6 +210,7 @@ export function toAudioDto(audio: {
     sha256: audio.sha256,
     transcript: audio.transcript,
     transcriptStatus: audio.transcriptStatus as TranscriptStatus,
+    sentences: audio.sentences ? parseJson<TranscriptSentence[] | null>(audio.sentences, null) : null,
     createdAt: audio.createdAt.toISOString(),
     url: `/api/audio/${audio.id}/stream`,
   };

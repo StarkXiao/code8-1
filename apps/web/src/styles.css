@@ -233,6 +233,161 @@ a {
   font-size: 0.9rem;
 }
 
+/* 分句时间轴：句段底色 + 可拖拽边界 */
+.froa-wave-region {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  background: rgba(47, 107, 176, 0.08);
+  border-right: 1px dashed rgba(47, 107, 176, 0.35);
+  pointer-events: none;
+}
+
+.froa-wave-region.is-active {
+  background: rgba(47, 107, 176, 0.2);
+}
+
+.froa-wave-boundary {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 9px;
+  transform: translateX(-50%);
+  cursor: ew-resize;
+  z-index: 3;
+  touch-action: none;
+}
+
+.froa-wave-boundary::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  transform: translateX(-50%);
+  background: var(--froa-time);
+  border-radius: 1px;
+}
+
+.froa-wave-boundary::after {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 9px;
+  height: 22px;
+  transform: translate(-50%, -50%);
+  background: var(--froa-time);
+  border-radius: 3px;
+  opacity: 0.55;
+}
+
+.froa-wave-boundary:hover::after,
+.froa-wave-boundary.is-dragging::after {
+  opacity: 1;
+  height: 28px;
+}
+
+/* ---------------- 分句列表 ---------------- */
+
+.froa-sentences {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+}
+
+.froa-sentences-toolbar {
+  justify-content: space-between;
+}
+
+.froa-sentences-error {
+  display: block;
+  font-size: 0.9rem;
+}
+
+.froa-sentences-empty {
+  padding: 1.25rem;
+  border: 1px dashed var(--froa-border);
+  border-radius: 10px;
+  text-align: center;
+}
+
+.froa-boundary-demo {
+  display: inline-block;
+  width: 2px;
+  height: 0.9em;
+  background: var(--froa-time);
+  vertical-align: middle;
+  margin: 0 2px;
+}
+
+.froa-sentence-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.froa-sentence {
+  border: 1px solid var(--froa-border);
+  border-left: 3px solid var(--froa-time);
+  border-radius: 8px;
+  padding: 0.5rem 0.7rem;
+  background: var(--froa-surface);
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.froa-sentence.is-active {
+  border-left-color: var(--froa-primary);
+  background: var(--froa-primary-soft);
+}
+
+.froa-sentence.has-error {
+  border-color: var(--froa-heat);
+}
+
+.froa-sentence-time {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--froa-text-soft);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.88rem;
+}
+
+.froa-icon-button {
+  border: none;
+  background: none;
+  padding: 0 2px;
+  cursor: pointer;
+  color: var(--froa-time);
+  font-size: 1.15rem;
+  line-height: 1;
+}
+
+.froa-icon-button:hover {
+  color: var(--froa-primary);
+}
+
+.froa-sentence-manual {
+  margin-inline-start: auto;
+}
+
+.froa-sentence-actions {
+  display: flex;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+}
+
+.froa-sentence-row-error {
+  font-size: 0.85rem;
+}
+
 /* ---------------- 播放器 ---------------- */
 
 .froa-player {

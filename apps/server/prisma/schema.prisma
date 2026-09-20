@@ -215,6 +215,8 @@ model AudioAttachment {
   sha256           String
   transcript       String?
   transcriptStatus String    @default("none")
+  /// JSON：TranscriptSentence[]，分句后的每句话与其音频时间区间（可人工拖拽修正）
+  sentences        String?
   deletedAt        DateTime?
   createdAt        DateTime  @default(now())
 

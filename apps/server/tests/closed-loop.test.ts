@@ -56,13 +56,13 @@ function fakeWav(seconds = 1): Buffer {
   return buffer;
 }
 
-async function uploadAudio(session: Session, recipeId: string, kind: string): Promise<string> {
+async function uploadAudio(session: Session, recipeId: string, kind: string, durationMs = 1000): Promise<string> {
   const response = await request(app)
     .post('/api/audio')
     .set(auth(session))
     .field('recipeId', recipeId)
     .field('kind', kind)
-    .field('durationMs', '1000')
+    .field('durationMs', String(durationMs))
     .field('peaks', JSON.stringify([0.1, 0.6, 0.9, 0.3, 0.2]))
     .attach('file', fakeWav(), { filename: 'voice.wav', contentType: 'audio/wav' })
     .expect(201);
@@ -135,7 +135,7 @@ describe('主闭环：从一句模糊口述到一条已验证的可复做结论'
   });
 
   it('3. 上传原始语音并框选出一段片段', async () => {
-    audioId = await uploadAudio(organizer, recipeId, 'recipe_voice');
+    audioId = await uploadAudio(organizer, recipeId, 'recipe_voice', 10_000);
 
     const audio = await request(app).get(`/api/audio/${audioId}`).set(auth(organizer)).expect(200);
 
@@ -151,6 +151,73 @@ describe('主闭环：从一句模糊口述到一条已验证的可复做结论'
       .expect(201);
 
     clipId = clip.body.data.id;
+  });
+
+  it('3b. 人工转写自动分句落时间轴，边界可拖拽修正并持久化', async () => {
+    // 保存整段转写：服务端按句末标点分句、按发音字符数均摊到 10000ms
+    const saved = await request(app)
+      .patch(`/api/audio/${audioId}/transcript`)
+      .set(auth(organizer))
+      .send({ transcript: '先炒糖色。放一点糖就行。最后收汁。' })
+      .expect(200);
+
+    const auto = saved.body.data.sentences;
+    expect(Array.isArray(auto)).toBe(true);
+    expect(auto).toHaveLength(3);
+    expect(auto[0].startMs).toBe(0);
+    expect(auto[2].endMs).toBe(10_000);
+    // 自动落点严格首尾相接、不重叠
+    expect(auto[0].endMs).toBe(auto[1].startMs);
+    expect(auto[1].endMs).toBe(auto[2].startMs);
+    // 中间句字数最多（7 个发音字），分到的时长也最长
+    const durations = auto.map((s: { endMs: number; startMs: number }) => s.endMs - s.startMs);
+    expect(durations[1]).toBeGreaterThan(durations[0]);
+    expect(durations[1]).toBeGreaterThan(durations[2]);
+
+    // 模拟整理者拖边界：把第二句的起点（=第一句终点）挪到 400ms
+    const dragged = auto.map(
+      (s: { startMs: number; endMs: number; text: string }, index: number) =>
+        index === 0
+          ? { ...s, endMs: 400 }
+          : index === 1
+            ? { ...s, startMs: 400 }
+            : s,
+    );
+
+    const persisted = await request(app)
+      .put(`/api/audio/${audioId}/sentences`)
+      .set(auth(organizer))
+      .send({ sentences: dragged })
+      .expect(200);
+
+    expect(persisted.body.data.sentences[0].endMs).toBe(400);
+    expect(persisted.body.data.sentences[1].startMs).toBe(400);
+    expect(persisted.body.data.sentences.every((s: { source: string }) => s.source === 'manual')).toBe(true);
+    // 默认同步整段转写文本
+    expect(persisted.body.data.audio.transcript).toBe('先炒糖色。放一点糖就行。最后收汁。');
+
+    // 重叠的边界必须被服务端拒绝（不能只靠前端自觉）
+    const invalid = dragged.map(
+      (s: { startMs: number; endMs: number; text: string }, index: number) =>
+        index === 1 ? { ...s, startMs: 100 } : s,
+    );
+    await request(app)
+      .put(`/api/audio/${audioId}/sentences`)
+      .set(auth(organizer))
+      .send({ sentences: invalid })
+      .expect(400);
+
+    // 重新分句回到按文本均摊的初始状态
+    const reset = await request(app)
+      .post(`/api/audio/${audioId}/sentences/resegment`)
+      .set(auth(organizer))
+      .expect(200);
+    expect(reset.body.data.sentences).toHaveLength(3);
+    expect(reset.body.data.sentences[0].endMs).toBe(auto[0].endMs);
+
+    // 再次读详情，句子随音频 DTO 一起返回
+    const detail = await request(app).get(`/api/audio/${audioId}`).set(auth(organizer)).expect(200);
+    expect(detail.body.data.sentences).toHaveLength(3);
   });
 
   it('4. 把原话标记为"用量模糊"，生成待澄清条目', async () => {

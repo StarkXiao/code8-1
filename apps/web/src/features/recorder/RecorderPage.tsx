@@ -29,6 +29,7 @@ import { audioApi, recipeApi, vagueItemApi, workspaceApi } from '../../api/endpo
 import { errorMessage } from '../../api/client';
 import { AudioRecorder, analyzeAudio, type RecordedAudio } from '../../components/AudioRecorder';
 import { Waveform, formatMs, type WaveformSelection } from '../../components/Waveform';
+import { TranscriptTimeline } from '../../components/TranscriptTimeline';
 import { useAudioPlayback } from '../../hooks/useAudioPlayback';
 import { usePlayerStore } from '../../store/player';
 
@@ -112,7 +113,10 @@ export function RecorderPage() {
       if (result.needsManualInput) {
         message.info('音频已保存。当前转写模式是"人工录入"，请在右侧把听到的内容打下来。');
       } else {
-        message.success(`已用 ${result.provider} 自动转写，请核对后修改。`);
+        const count = result.sentences?.length ?? 0;
+        message.success(
+          `已用 ${result.provider} 自动转写${count ? `，并把 ${count} 句话自动对齐到了时间轴` : ''}，请核对后修改。`,
+        );
       }
       void queryClient.invalidateQueries({ queryKey: ['audio', recipeId] });
       void queryClient.invalidateQueries({ queryKey: ['recipe', recipeId] });
@@ -124,7 +128,8 @@ export function RecorderPage() {
     mutationFn: () => audioApi.updateTranscript(audio!.id, transcript),
     onSuccess: (updated) => {
       setAudio(updated);
-      message.success('转写文本已保存');
+      const count = updated.sentences?.length ?? 0;
+      message.success(count ? `转写文本已保存，并按句子对齐了 ${count} 个音频区间` : '转写文本已保存');
       void queryClient.invalidateQueries({ queryKey: ['audio', recipeId] });
     },
     onError: (error) => message.error(errorMessage(error)),
@@ -388,6 +393,31 @@ export function RecorderPage() {
                 自动找找哪句说不清
               </Button>
             </div>
+
+            <Divider plain>分句与时间轴对齐</Divider>
+            <Typography.Paragraph type="secondary" style={{ marginBottom: '0.5rem' }}>
+              保存转写后，每句话会自动落到对应的音频区间。放错了就拖波形上的蓝线修正，
+              也可以拆分、合并句子；改完点"保存分句与时间轴"。
+            </Typography.Paragraph>
+            <TranscriptTimeline
+              audio={audio}
+              onSaved={(updated) => {
+                setAudio(updated);
+                setTranscript(updated.transcript ?? '');
+              }}
+              onUseSentence={(sentence) => {
+                // 句子区间即片段：直接落一条 clip，再带着它打开"这句说不清"
+                const range = { startMs: sentence.startMs, endMs: sentence.endMs };
+                setSelection(range);
+                audioApi
+                  .createClip(audio.id, range)
+                  .then((createdClip) => {
+                    setClip(createdClip);
+                    openMarkDialog(sentence.text.slice(0, 200), 'other');
+                  })
+                  .catch((error) => message.error(errorMessage(error)));
+              }}
+            />
 
             {suggestionMutation.data && (
               <>

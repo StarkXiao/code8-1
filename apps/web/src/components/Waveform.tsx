@@ -5,12 +5,29 @@ export interface WaveformSelection {
   endMs: number;
 }
 
+export interface WaveformRegion {
+  startMs: number;
+  endMs: number;
+  active?: boolean;
+}
+
+export interface BoundaryDrag {
+  index: number;
+  ms: number;
+}
+
 interface WaveformProps {
   peaks: number[] | null;
   durationMs: number;
   height?: number;
   selection?: WaveformSelection | null;
   playheadMs?: number;
+  /** 分句时间轴：在波形上叠加每句话的区间底色 */
+  regions?: WaveformRegion[] | null;
+  /** 句间边界的时间点（即每句的起点）；提供后显示可拖拽手柄，index 0 为首句起点 */
+  boundaries?: number[] | null;
+  /** 拖拽边界时持续回调；松手时 settled=true，调用方据此提交 */
+  onBoundaryDrag?: (drag: BoundaryDrag | null, settled: boolean) => void;
   /** 允许拖拽框选片段；不传表示只读 */
   onSelect?: (selection: WaveformSelection | null) => void;
   onSeek?: (ms: number) => void;
@@ -29,6 +46,9 @@ export function Waveform({
   height = 96,
   selection,
   playheadMs,
+  regions,
+  boundaries,
+  onBoundaryDrag,
   onSelect,
   onSeek,
   emptyHint = '这段音频还没有波形数据',
@@ -38,6 +58,8 @@ export function Waveform({
   const [width, setWidth] = useState(600);
   const [dragStart, setDragStart] = useState<number | null>(null);
   const [dragCurrent, setDragCurrent] = useState<number | null>(null);
+  // 正在拖动的句间边界（手柄 index 与当前时间）
+  const [handleDrag, setHandleDrag] = useState<{ index: number; ms: number } | null>(null);
 
   // 容器宽度变化时重绘（响应式）
   useEffect(() => {
@@ -101,8 +123,47 @@ export function Waveform({
     [durationMs],
   );
 
+  // 句间边界的命中范围（像素）：胖一点，手指也好拖
+  const HANDLE_HIT_PX = 7;
+
+  /** 判断指针是否落在某个边界手柄上，返回手柄 index（0..boundaries.length-1） */
+  const hitBoundary = useCallback(
+    (clientX: number): number | null => {
+      const element = containerRef.current;
+      if (!element || !boundaries?.length || durationMs <= 0) return null;
+      const rect = element.getBoundingClientRect();
+      const x = clientX - rect.left;
+      let hit: number | null = null;
+      let hitDistance = HANDLE_HIT_PX + 1;
+      boundaries.forEach((ms, index) => {
+        // 首尾边界（0 与音频结尾）不允许拖动
+        if (ms <= 0 || ms >= durationMs) return;
+        const handleX = (ms / durationMs) * rect.width;
+        const distance = Math.abs(handleX - x);
+        if (distance <= HANDLE_HIT_PX && distance < hitDistance) {
+          hit = index;
+          hitDistance = distance;
+        }
+      });
+      return hit;
+    },
+    [boundaries, durationMs],
+  );
+
   const handlePointerDown = (event: React.PointerEvent<HTMLDivElement>) => {
     if (!normalized) return;
+
+    // 优先处理边界手柄拖拽；拖手柄时不触发框选
+    const boundaryIndex = onBoundaryDrag ? hitBoundary(event.clientX) : null;
+    if (boundaryIndex !== null) {
+      event.stopPropagation();
+      (event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId);
+      const ms = positionToMs(event.clientX);
+      setHandleDrag({ index: boundaryIndex, ms });
+      onBoundaryDrag?.({ index: boundaryIndex, ms }, false);
+      return;
+    }
+
     if (!onSelect) {
       onSeek?.(positionToMs(event.clientX));
       return;
@@ -114,11 +175,22 @@ export function Waveform({
   };
 
   const handlePointerMove = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (handleDrag) {
+      const ms = positionToMs(event.clientX);
+      setHandleDrag({ ...handleDrag, ms });
+      onBoundaryDrag?.({ index: handleDrag.index, ms }, false);
+      return;
+    }
     if (dragStart === null) return;
     setDragCurrent(positionToMs(event.clientX));
   };
 
   const handlePointerUp = (event: React.PointerEvent<HTMLDivElement>) => {
+    if (handleDrag) {
+      onBoundaryDrag?.({ index: handleDrag.index, ms: positionToMs(event.clientX) }, true);
+      setHandleDrag(null);
+      return;
+    }
     if (dragStart === null || !onSelect) {
       onSeek?.(positionToMs(event.clientX));
       return;
@@ -170,6 +242,17 @@ export function Waveform({
       tabIndex={0}
     >
       <canvas ref={canvasRef} style={{ height }} />
+      {durationMs > 0 &&
+        regions?.map((region, index) => (
+          <div
+            key={`region-${index}`}
+            className={`froa-wave-region${region.active ? ' is-active' : ''}`}
+            style={{
+              left: `${(region.startMs / durationMs) * 100}%`,
+              width: `${Math.max(0, ((region.endMs - region.startMs) / durationMs) * 100)}%`,
+            }}
+          />
+        ))}
       {durationMs > 0 && activeSelection && (
         <div
           className="froa-wave-selection"
@@ -179,6 +262,20 @@ export function Waveform({
           }}
         />
       )}
+      {durationMs > 0 &&
+        boundaries?.map((ms, index) => {
+          const dragging = handleDrag?.index === index ? handleDrag.ms : null;
+          const shownMs = dragging ?? ms;
+          if (shownMs <= 0 || shownMs >= durationMs) return null;
+          return (
+            <div
+              key={`boundary-${index}`}
+              className={`froa-wave-boundary${handleDrag?.index === index ? ' is-dragging' : ''}`}
+              style={{ left: `${(shownMs / durationMs) * 100}%` }}
+              title="拖动修正这句话的边界"
+            />
+          );
+        })}
       {durationMs > 0 && playheadMs !== undefined && (
         <div
           className="froa-wave-playhead"
