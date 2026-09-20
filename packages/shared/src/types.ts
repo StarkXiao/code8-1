@@ -173,8 +173,12 @@ export interface AudioAttachmentDto {
   sha256: string;
   transcript: string | null;
   transcriptStatus: TranscriptStatus;
+  /** 分句对齐结果的版本戳；分句保存接口用它做乐观锁 */
+  transcriptUpdatedAt: string | null;
   createdAt: string;
   url: string;
+  /** 仅详情 / 转写类接口返回，列表接口为了轻量不带 */
+  segments?: TranscriptSegmentDto[];
 }
 
 export interface AudioClipDto {
@@ -185,6 +189,23 @@ export interface AudioClipDto {
   label: string | null;
   createdBy: string;
   createdAt: string;
+}
+
+/**
+ * 转写分句：一句口述文字对应的音频区间。
+ * start/end 由 ASR 或"自动对齐"给出，可由整理者拖动边界修正（edited=true）。
+ */
+export interface TranscriptSegmentDto {
+  id: string;
+  audioAttachmentId: string;
+  orderIndex: number;
+  startMs: number;
+  endMs: number;
+  text: string;
+  /** true 表示整理者手动修正过边界或文字，重新自动对齐时应提示 */
+  edited: boolean;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface VagueItemDto {

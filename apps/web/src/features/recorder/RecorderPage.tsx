@@ -16,18 +16,26 @@ import {
   Typography,
   Upload,
 } from 'antd';
-import { AudioOutlined, CloudUploadOutlined, ScissorOutlined, UploadOutlined } from '@ant-design/icons';
+import {
+  AudioOutlined,
+  CloudUploadOutlined,
+  EditOutlined,
+  ScissorOutlined,
+  UploadOutlined,
+} from '@ant-design/icons';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import {
   VAGUE_CATEGORIES,
   VAGUE_CATEGORY_LABELS,
   type AudioAttachmentDto,
   type AudioClipDto,
+  type TranscriptSegmentDto,
   type VagueCategory,
 } from '@froa/shared';
 import { audioApi, recipeApi, vagueItemApi, workspaceApi } from '../../api/endpoints';
 import { errorMessage } from '../../api/client';
 import { AudioRecorder, analyzeAudio, type RecordedAudio } from '../../components/AudioRecorder';
+import { TranscriptTimeline, type EditableSegment } from '../../components/TranscriptTimeline';
 import { Waveform, formatMs, type WaveformSelection } from '../../components/Waveform';
 import { useAudioPlayback } from '../../hooks/useAudioPlayback';
 import { usePlayerStore } from '../../store/player';
@@ -57,10 +65,14 @@ export function RecorderPage() {
   const [selection, setSelection] = useState<WaveformSelection | null>(null);
   const [clip, setClip] = useState<AudioClipDto | null>(null);
   const [transcript, setTranscript] = useState('');
+  const [segments, setSegments] = useState<TranscriptSegmentDto[]>([]);
   const [markOpen, setMarkOpen] = useState(false);
   const [markForm] = Form.useForm<{ category: VagueCategory; rawPhrase: string; assigneeId?: string }>();
   const [createdCount, setCreatedCount] = useState(0);
   const [playhead, setPlayhead] = useState(0);
+  /** 全局播放器里正在播放的是否就是当前这条音频（决定波形播放头是否跟随） */
+  const playerRequest = usePlayerStore((s) => s.request);
+  const playerMs = usePlayerStore((s) => s.currentMs);
   const playLocal = usePlayerStore((s) => s.play);
   // 本地试听用的 blob URL 必须显式释放，否则每次重录都会漏一份内存
   const objectUrlRef = useRef<string | null>(null);
@@ -108,14 +120,31 @@ export function RecorderPage() {
       revokeObjectUrl();
       setAudio(result.audio);
       setTranscript(result.audio.transcript ?? '');
+      setSegments(result.audio.segments ?? []);
       setRecorded(null);
+      setClip(null);
+      setSelection(null);
       if (result.needsManualInput) {
         message.info('音频已保存。当前转写模式是"人工录入"，请在右侧把听到的内容打下来。');
       } else {
-        message.success(`已用 ${result.provider} 自动转写，请核对后修改。`);
+        message.success(`已用 ${result.provider} 自动转写并分句，请核对后修改。`);
       }
       void queryClient.invalidateQueries({ queryKey: ['audio', recipeId] });
       void queryClient.invalidateQueries({ queryKey: ['recipe', recipeId] });
+    },
+    onError: (error) => message.error(errorMessage(error)),
+  });
+
+  /** 打开一条已经保存过的音频继续整理（分句 / 转写都从详情接口取全） */
+  const openAudioMutation = useMutation({
+    mutationFn: (item: AudioAttachmentDto) => audioApi.get(item.id),
+    onSuccess: (detail) => {
+      setAudio(detail);
+      setTranscript(detail.transcript ?? '');
+      setSegments(detail.segments ?? []);
+      setClip(null);
+      setSelection(null);
+      setKind(detail.kind as keyof typeof KIND_LABELS);
     },
     onError: (error) => message.error(errorMessage(error)),
   });
@@ -158,6 +187,27 @@ export function RecorderPage() {
     },
     onError: (error) => message.error(errorMessage(error)),
   });
+
+  /**
+   * 从时间轴某一句发起"这句说不清"：
+   * 先把这句区间存成原声片段（证据锚点），再打开标记弹窗并预填原话。
+   */
+  const markSegment = (segment: EditableSegment) => {
+    if (!audio) return;
+    audioApi
+      .createClip(audio.id, {
+        startMs: segment.startMs,
+        endMs: segment.endMs,
+        label: segment.text.slice(0, 100),
+      })
+      .then((createdClip) => {
+        setClip(createdClip);
+        setSelection({ startMs: segment.startMs, endMs: segment.endMs });
+        markForm.setFieldsValue({ rawPhrase: segment.text.slice(0, 200), category: 'other' });
+        setMarkOpen(true);
+      })
+      .catch((error) => message.error(errorMessage(error)));
+  };
 
   const suggestionMutation = useMutation({
     mutationFn: () => vagueItemApi.suggest(recipeId!, transcript),
@@ -288,7 +338,7 @@ export function RecorderPage() {
               peaks={audio.peaks}
               durationMs={audio.durationMs}
               selection={selection}
-              playheadMs={playhead}
+              playheadMs={playerRequest?.audioId === audio.id ? playerMs : playhead}
               onSelect={setSelection}
               onSeek={setPlayhead}
             />
@@ -347,10 +397,24 @@ export function RecorderPage() {
                     >
                       播放
                     </Button>,
+                    <Button
+                      key="edit"
+                      type="link"
+                      icon={<EditOutlined />}
+                      loading={openAudioMutation.isPending && openAudioMutation.variables?.id === item.id}
+                      onClick={() => openAudioMutation.mutate(item)}
+                    >
+                      整理转写
+                    </Button>,
                   ]}
                 >
                   <List.Item.Meta
-                    title={`${KIND_LABELS[item.kind as keyof typeof KIND_LABELS] ?? item.kind} · ${formatMs(item.durationMs)}`}
+                    title={
+                      <Space size={4}>
+                        {item.id === audio.id && <Tag color="blue" style={{ marginInlineEnd: 0 }}>当前</Tag>}
+                        {`${KIND_LABELS[item.kind as keyof typeof KIND_LABELS] ?? item.kind} · ${formatMs(item.durationMs)}`}
+                      </Space>
+                    }
                     description={
                       item.transcriptStatus === 'done'
                         ? (item.transcript ?? '').slice(0, 40) || '已转写（内容为空）'
@@ -366,7 +430,8 @@ export function RecorderPage() {
           <div className="froa-detail">
             <h3 className="froa-card-title">转写与标注</h3>
             <Typography.Paragraph type="secondary">
-              把长辈说的话打在这里（或核对自动转写结果），然后找出"说不清"的地方标出来。
+              把长辈说的话打在这里（或核对自动转写结果），保存原文后点"分句并对齐时间轴"，
+              让每句话自动落到对应音频区间；再到下面逐句核对、拖动边界。
             </Typography.Paragraph>
 
             <Input.TextArea
@@ -378,7 +443,7 @@ export function RecorderPage() {
 
             <div className="froa-row" style={{ marginTop: '0.75rem' }}>
               <Button type="primary" onClick={() => saveTranscriptMutation.mutate()} loading={saveTranscriptMutation.isPending}>
-                保存转写
+                保存转写原文
               </Button>
               <Button
                 onClick={() => suggestionMutation.mutate()}
@@ -388,6 +453,27 @@ export function RecorderPage() {
                 自动找找哪句说不清
               </Button>
             </div>
+
+            <Divider plain orientation="left">分句 · 时间轴对齐</Divider>
+
+            {audio.durationMs > 0 ? (
+              <TranscriptTimeline
+                audio={audio}
+                segments={segments}
+                onSaved={(updated) => {
+                  setAudio(updated);
+                  setSegments(updated.segments ?? []);
+                  setTranscript(updated.transcript ?? '');
+                  message.success('分句与时间轴已保存');
+                  void queryClient.invalidateQueries({ queryKey: ['audio', recipeId] });
+                }}
+                onMarkVague={markSegment}
+              />
+            ) : (
+              <Typography.Text type="warning">
+                这条音频缺少时长信息，无法对齐时间轴；重新上传带时长的音频后即可分句。
+              </Typography.Text>
+            )}
 
             {suggestionMutation.data && (
               <>

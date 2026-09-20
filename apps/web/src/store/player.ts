@@ -15,10 +15,14 @@ interface PlayerState {
   request: PlayRequest | null;
   playing: boolean;
   currentMs: number;
+  /** 非 0 表示有一次显式定位请求（点击波形 / 句间跳转），GlobalPlayer 消费后归零 */
+  seekNonce: number;
   play: (request: Omit<PlayRequest, 'nonce'>) => void;
   stop: () => void;
   setPlaying: (playing: boolean) => void;
   setCurrentMs: (ms: number) => void;
+  /** 在当前播放的音频上定位；没有正在播放的音频时无效 */
+  seek: (ms: number) => void;
 }
 
 /**
@@ -31,9 +35,11 @@ export const usePlayerStore = create<PlayerState>((set) => ({
   request: null,
   playing: false,
   currentMs: 0,
+  seekNonce: 0,
 
   play: (request) => set({ request: { ...request, nonce: Date.now() }, playing: true, currentMs: request.startMs ?? 0 }),
   stop: () => set({ request: null, playing: false, currentMs: 0 }),
   setPlaying: (playing) => set({ playing }),
   setCurrentMs: (currentMs) => set({ currentMs }),
+  seek: (ms) => set((state) => (state.request ? { currentMs: ms, seekNonce: state.seekNonce + 1 } : {})),
 }));

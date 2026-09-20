@@ -15,9 +15,25 @@ export function GlobalPlayer() {
   const request = usePlayerStore((s) => s.request);
   const playing = usePlayerStore((s) => s.playing);
   const currentMs = usePlayerStore((s) => s.currentMs);
+  const seekNonce = usePlayerStore((s) => s.seekNonce);
   const setPlaying = usePlayerStore((s) => s.setPlaying);
   const setCurrentMs = usePlayerStore((s) => s.setCurrentMs);
   const stop = usePlayerStore((s) => s.stop);
+
+  // 显式定位请求（在波形上点某句）：只移动 currentTime，不打断当前播放 / 暂停状态
+  useEffect(() => {
+    if (!seekNonce) return;
+    const audio = audioRef.current;
+    if (!audio || !request) return;
+    const apply = () => {
+      const seconds = currentMs / 1000;
+      if (Number.isFinite(audio.duration)) {
+        audio.currentTime = Math.min(seconds, Math.max(0, audio.duration - 0.05));
+      }
+    };
+    if (audio.readyState >= 1) apply();
+    else audio.addEventListener('loadedmetadata', apply, { once: true });
+  }, [seekNonce]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const audio = audioRef.current;

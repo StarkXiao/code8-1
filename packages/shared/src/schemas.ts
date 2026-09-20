@@ -210,6 +210,38 @@ export const updateTranscriptSchema = z.object({
 });
 
 /* ------------------------------------------------------------------ */
+/* 转写分句与时间轴对齐                                                  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * 分句条目。保存的是整理者修正后的完整句子表（整体替换，不做逐行 PATCH）：
+ * id 仅用于前端行内 key，新增句传空 / null 即可，服务端不依据它定位。
+ */
+export const transcriptSegmentInputSchema = z.object({
+  id: z.string().max(64).nullish(),
+  startMs: z.number().int().min(0),
+  endMs: z.number().int().min(0),
+  text: z.string().trim().min(1, '分句不能为空').max(2000),
+  edited: z.boolean().optional(),
+});
+
+/** PUT /audio/:audioId/transcript/segments —— 保存拖动 / 编辑后的时间轴 */
+export const replaceSegmentsSchema = z.object({
+  segments: z.array(transcriptSegmentInputSchema).min(1, '至少保留一句').max(500),
+  expectedUpdatedAt: expectedUpdatedAtSchema,
+});
+
+/** POST /audio/:audioId/transcript/align —— 对纯文本转写一键分句并对齐 */
+export const alignTranscriptSchema = z.object({
+  /** 不传则使用音频上已保存的 transcript 原文 */
+  transcript: z.string().max(20000).optional(),
+  snap: z.boolean().optional(),
+});
+
+export type TranscriptSegmentInput = z.infer<typeof transcriptSegmentInputSchema>;
+export type ReplaceSegmentsInput = z.infer<typeof replaceSegmentsSchema>;
+
+/* ------------------------------------------------------------------ */
 /* 待澄清条目（核心）                                                  */
 /* ------------------------------------------------------------------ */
 

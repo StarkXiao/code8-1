@@ -1,5 +1,6 @@
 import type {
   ActivityLogDto,
+  AlignedSegment,
   AudioAttachmentDto,
   AudioClipDto,
   AuthTokens,
@@ -19,6 +20,7 @@ import type {
   RecipeVersionDto,
   ResolvedSpec,
   StepDto,
+  TranscriptSegmentDto,
   UserDto,
   VagueCategory,
   VagueItemDto,
@@ -181,6 +183,24 @@ export const audioApi = {
     }>(api.post(`/audio/${audioId}/transcribe`)),
   updateTranscript: (audioId: string, transcript: string, transcriptStatus?: string) =>
     unwrap<AudioAttachmentDto>(api.patch(`/audio/${audioId}/transcript`, { transcript, transcriptStatus })),
+  /** 分句时间轴：读取 / 一键自动对齐（不落库）/ 保存整理者修正后的整份句子表 */
+  segments: (audioId: string) =>
+    unwrap<TranscriptSegmentDto[]>(api.get(`/audio/${audioId}/transcript/segments`)),
+  alignTranscript: (
+    audioId: string,
+    input: { transcript?: string; snap?: boolean } = {},
+  ) =>
+    unwrap<{ segments: AlignedSegment[]; sentenceCount: number; snapped: boolean }>(
+      api.post(`/audio/${audioId}/transcript/align`, input),
+    ),
+  saveSegments: (
+    audioId: string,
+    input: {
+      segments: { id?: string | null; startMs: number; endMs: number; text: string; edited?: boolean }[];
+      expectedUpdatedAt?: string;
+    },
+  ) =>
+    unwrap<{ audio: AudioAttachmentDto }>(api.put(`/audio/${audioId}/transcript/segments`, input)),
   createClip: (audioId: string, input: { startMs: number; endMs: number; label?: string | null }) =>
     unwrap<AudioClipDto>(api.post(`/audio/${audioId}/clips`, input)),
   remove: (audioId: string) => unwrap<{ removed: string }>(api.delete(`/audio/${audioId}`)),

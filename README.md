@@ -138,6 +138,8 @@ origin/
 
 **转写是加速器，不是必需品。** 默认 `ASR_PROVIDER=manual`：不调用任何外部服务，转写由人工录入，全流程照样跑通。想省事可以切 `whisper-local`（本机装 whisper）或 `openai`（需要 API Key）。
 
+**每句口述都自动落到音频区间，边界还能拖。** 自动转写（whisper/openai）给出的带时间戳分句会直接入库；人工录入的纯文本，点一下"分句并对齐时间轴"：先按句末标点（。！？；换行）与逗号分句，再按各句字数把整段音频时长均分，并用波形峰值把句间边界吸附到附近最近的停顿（换气）处。之后每一句都显示在与波形对齐的时间轴上，整理者可以直接拖波形上的句柄、用 ±0.1 秒按钮微调、拆句 / 合句 / 改文字，保存时整表替换并带乐观锁（别人刚改过会返回 409）。任意一句都能一键"这句说不清"——自动按该句区间建原声片段再生成待澄清条目，证据天然精确到句。
+
 **参照物登记。** 先把"外婆家那只白瓷勺 = 一平勺 8g"量化一次存进空间，之后所有"半勺""一勺"都能换算成克。这是把模糊用量变成数值最有效的手段。
 
 **并发编辑不会互相覆盖。** 步骤、用量、待澄清条目、版本都带 `updatedAt`。前端提交时回传它读到的时间戳；如果这期间别人改过，服务端返回 `409 EDIT_CONFLICT` 并附上最新内容，而不是静默覆盖。不传该字段时退化为"最后写入者胜"，方便脚本与旧客户端接入。
@@ -178,8 +180,8 @@ origin/
 **UI 层闭环**（`apps/web/e2e/closed-loop.spec.ts`）：在真实 Chrome 里从注册走到发布，包含在波形上拖拽框选片段，最后验证导出真的能下载。
 
 ```bash
-npm run test        # 后端 60 个测试
-npm run test:e2e    # 浏览器端 4 条用例（默认用系统 Chrome）
+npm run test        # 后端 89 个测试（含分句对齐算法单测、时间轴接口与跨空间拦截）
+npm run test:e2e    # 浏览器端 5 条用例（默认用系统 Chrome）
 ```
 
 浏览器端除了闭环，还有两条覆盖面更广的用例：
@@ -190,7 +192,8 @@ npm run test:e2e    # 浏览器端 4 条用例（默认用系统 Chrome）
   确认时长不为 0、峰值已生成、校验和已落库。
 
 > e2e 会自己起一个独立的服务实例（端口 4100、独立数据库 `data/e2e.db`），不会碰到你的开发数据。
-> 如果机器上没有 Chrome：`npx playwright install chromium`，然后去掉 `playwright.config.ts` 里的 `channel: 'chrome'`。
+> 如果机器上没有 Chrome：`npx playwright install chromium`，然后用 `npx playwright test --config playwright.ci.config.ts`
+> （该配置去掉了 `channel: 'chrome'`，改用 Playwright 自带的 chromium）。
 
 ---
 

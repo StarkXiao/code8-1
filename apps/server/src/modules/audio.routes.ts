@@ -1,9 +1,13 @@
 import fs from 'node:fs';
 import { Router } from 'express';
 import {
+  alignTranscriptSchema,
   audioQuerySchema,
+  autoAlignTranscript,
   createClipSchema,
   isAllowedAudioMime,
+  normalizeSegments,
+  replaceSegmentsSchema,
   updateTranscriptSchema,
   uploadAudioFieldsSchema,
 } from '@froa/shared';
@@ -11,7 +15,7 @@ import { prisma } from '../db/client';
 import { ApiError, notFound } from '../lib/errors';
 import { asyncHandler, created, send } from '../lib/http';
 import { newId, sha256 } from '../lib/ids';
-import { stringifyJson } from '../lib/json';
+import { parseNumberArray, stringifyJson } from '../lib/json';
 import { logger } from '../lib/logger';
 import { requireAuth } from '../middleware/auth';
 import { audioUpload, translateUploadError } from '../middleware/upload';
@@ -24,9 +28,10 @@ import {
   getMembership,
 } from '../services/access';
 import { logActivity } from '../services/activity';
+import { assertNotStale } from '../lib/concurrency';
 import { buildAudioKey, extensionForMime, storage } from '../services/storage';
 import { transcriptionProvider } from '../services/transcription';
-import { toAudioDto, toClipDto } from '../services/serialize';
+import { toAudioDto, toClipDto, toSegmentDto } from '../services/serialize';
 import { emitToWorkspace } from '../realtime/hub';
 
 export const audioRouter: Router = Router();
@@ -149,7 +154,7 @@ audioRouter.get(
       take: 200,
     });
 
-    send(res, audios.map(toAudioDto));
+    send(res, audios.map((item) => toAudioDto(item)));
   }),
 );
 
@@ -159,9 +164,12 @@ audioRouter.get(
     const { audioId } = req.params;
     await assertAudioRole(req.auth!.userId, audioId!, 'viewer');
 
-    const audio = await prisma.audioAttachment.findUnique({ where: { id: audioId! } });
+    const audio = await prisma.audioAttachment.findUnique({
+      where: { id: audioId! },
+      include: { segments: { orderBy: { orderIndex: 'asc' } } },
+    });
     if (!audio) throw new ApiError('AUDIO_NOT_FOUND');
-    send(res, toAudioDto(audio));
+    send(res, toAudioDto(audio, audio.segments));
   }),
 );
 
@@ -229,21 +237,52 @@ audioRouter.post(
         ? await provider.transcribe({ path: absolutePath, mimeType: audio.mimeType })
         : { text: '', segments: [], empty: true };
 
-      const updated = await prisma.audioAttachment.update({
-        where: { id: audio.id },
-        data: {
-          transcript: result.empty ? audio.transcript : result.text,
-          transcriptStatus: 'done',
-        },
+      const now = new Date();
+
+      // ASR 给出带时间戳的分句时整体落库：分句时间轴是"每句回到原声"的锚点，
+      // 不能只留在一次 HTTP 响应里 —— 换台设备打开就丢了。
+      const asrSegments = (result.segments ?? []).filter(
+        (segment) => segment.text && segment.endMs > segment.startMs,
+      );
+
+      const updated = await prisma.$transaction(async (tx) => {
+        if (!result.empty) {
+          await tx.audioAttachment.update({
+            where: { id: audio.id },
+            data: { transcript: result.text },
+          });
+        }
+        if (asrSegments.length) {
+          await tx.transcriptSegment.deleteMany({ where: { audioAttachmentId: audio.id } });
+          await tx.transcriptSegment.createMany({
+            data: asrSegments.map((segment, index) => ({
+              id: newId(),
+              audioAttachmentId: audio.id,
+              orderIndex: index,
+              startMs: Math.max(0, segment.startMs),
+              endMs: segment.endMs,
+              text: segment.text,
+              edited: false,
+            })),
+          });
+        }
+        return tx.audioAttachment.update({
+          where: { id: audio.id },
+          data: {
+            transcriptStatus: 'done',
+            ...(asrSegments.length ? { transcriptUpdatedAt: now } : {}),
+          },
+          include: { segments: { orderBy: { orderIndex: 'asc' } } },
+        });
       });
 
       send(res, {
-        audio: toAudioDto(updated),
+        audio: toAudioDto(updated, updated.segments),
         provider: provider.name,
-        segments: result.segments,
+        segments: asrSegments,
         needsManualInput: result.empty,
         hint: result.empty
-          ? '当前转写驱动为 manual：请在上方文本框中人工录入这段口述'
+          ? '当前转写驱动为 manual：请在上方文本框中人工录入这段口述，再点"分句并对齐时间轴"'
           : undefined,
       });
     } catch (error) {
@@ -273,6 +312,147 @@ audioRouter.patch(
       data: { transcript, transcriptStatus: transcriptStatus ?? 'done' },
     });
     send(res, toAudioDto(audio));
+  }),
+);
+
+/* ------------------------------------------------------------------ */
+/* 转写分句与时间轴对齐                                                  */
+/* ------------------------------------------------------------------ */
+
+audioRouter.get(
+  '/audio/:audioId/transcript/segments',
+  asyncHandler(async (req, res) => {
+    const { audioId } = req.params;
+    await assertAudioRole(req.auth!.userId, audioId!, 'viewer');
+
+    const segments = await prisma.transcriptSegment.findMany({
+      where: { audioAttachmentId: audioId! },
+      orderBy: { orderIndex: 'asc' },
+    });
+    send(res, segments.map(toSegmentDto));
+  }),
+);
+
+/**
+ * 一键分句 + 自动对齐：把纯文本人工转写按句切开，
+ * 按字数比例把每句落到音频区间，并用波形峰值把边界吸附到最近的停顿处。
+ *
+ * 只负责"算"，不落库 —— 整理者要听过、拖过、确认后再保存，
+ * 避免自动结果直接覆盖已有的手工修正。
+ */
+audioRouter.post(
+  '/audio/:audioId/transcript/align',
+  validateBody(alignTranscriptSchema),
+  asyncHandler(async (req, res) => {
+    const { audioId } = req.params;
+    await assertAudioRole(req.auth!.userId, audioId!, 'contributor');
+
+    const { transcript: overrideText, snap } = req.body as {
+      transcript?: string;
+      snap?: boolean;
+    };
+
+    const audio = await prisma.audioAttachment.findUnique({ where: { id: audioId! } });
+    if (!audio) throw new ApiError('AUDIO_NOT_FOUND');
+    if (audio.durationMs <= 0) {
+      throw new ApiError(
+        'VALIDATION_FAILED',
+        '这段音频缺少时长信息，无法对齐时间轴；请重新上传带时长的音频',
+      );
+    }
+
+    const text = (overrideText ?? audio.transcript ?? '').trim();
+    if (!text) {
+      throw new ApiError('VALIDATION_FAILED', '请先填写转写文本，再进行分句对齐');
+    }
+
+    const peaks = parseNumberArray(audio.peaks);
+    const aligned = autoAlignTranscript(text, audio.durationMs, snap === false ? null : peaks);
+
+    if (!aligned.length) {
+      throw new ApiError('VALIDATION_FAILED', '没有切出任何有效句子，请检查转写文本');
+    }
+
+    send(res, {
+      segments: aligned,
+      sentenceCount: aligned.length,
+      snapped: snap !== false && Boolean(peaks?.length),
+    });
+  }),
+);
+
+/**
+ * 保存整理者修正后的整份分句时间轴（整体替换）。
+ *
+ * - 每句必须落在音频范围内、start < end、相邻句不重叠；
+ * - expectedUpdatedAt 做乐观锁：别人刚改过会返回 409，不静默覆盖；
+ * - 同步把分句文字拼回 transcript，保证纯文本字段与时间轴不互相矛盾。
+ */
+audioRouter.put(
+  '/audio/:audioId/transcript/segments',
+  validateBody(replaceSegmentsSchema),
+  asyncHandler(async (req, res) => {
+    const { audioId } = req.params;
+    const access = await assertAudioRole(req.auth!.userId, audioId!, 'contributor');
+
+    const { segments, expectedUpdatedAt } = req.body as {
+      segments: { id?: string | null; startMs: number; endMs: number; text: string; edited?: boolean }[];
+      expectedUpdatedAt?: string;
+    };
+
+    const audio = await prisma.audioAttachment.findUnique({ where: { id: audioId! } });
+    if (!audio) throw new ApiError('AUDIO_NOT_FOUND');
+    if (audio.durationMs <= 0) {
+      throw new ApiError('VALIDATION_FAILED', '这段音频缺少时长信息，无法保存分句时间轴');
+    }
+
+    // 乐观锁以"分句时间戳"为准；从未保存过分句时用 createdAt 兜底。
+    // 自动分句落库也会写 transcriptUpdatedAt，所以它能覆盖全部并发场景。
+    const versionStamp = audio.transcriptUpdatedAt ?? audio.createdAt;
+    assertNotStale(versionStamp, expectedUpdatedAt, {});
+
+    const normalized = normalizeSegments(segments, audio.durationMs);
+    if (!normalized) {
+      throw new ApiError(
+        'VALIDATION_FAILED',
+        '分句时间轴无效：每句必须落在音频范围内，起点早于终点，且相邻句子不能重叠',
+      );
+    }
+
+    const now = new Date();
+    const transcriptText = normalized.map((segment) => segment.text).join('');
+
+    const updated = await prisma.$transaction(async (tx) => {
+      await tx.transcriptSegment.deleteMany({ where: { audioAttachmentId: audio.id } });
+      await tx.transcriptSegment.createMany({
+        data: normalized.map((segment, index) => ({
+          id: newId(),
+          audioAttachmentId: audio.id,
+          orderIndex: index,
+          startMs: segment.startMs,
+          endMs: segment.endMs,
+          text: segment.text,
+          edited: true,
+        })),
+      });
+      return tx.audioAttachment.update({
+        where: { id: audio.id },
+        data: { transcript: transcriptText, transcriptStatus: 'done', transcriptUpdatedAt: now },
+        include: { segments: { orderBy: { orderIndex: 'asc' } } },
+      });
+    });
+
+    await logActivity({
+      workspaceId: access.workspaceId,
+      actorId: req.auth!.userId,
+      action: 'audio.transcript.align',
+      entityType: 'audio_attachment',
+      entityId: audio.id,
+      after: { sentenceCount: normalized.length },
+    });
+
+    emitToWorkspace(access.workspaceId, 'audio:updated', { recipeId: audio.recipeId, audioId: audio.id });
+    send(res, { audio: toAudioDto(updated, updated.segments) });
   }),
 );
 

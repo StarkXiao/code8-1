@@ -315,6 +315,7 @@ describe('回归：跨空间写入必须全面被拒（按 id 逐个试探）', 
   let stepB = '';
   let itemB = '';
   let clipB = '';
+  let audioB = '';
   let referenceB = '';
   let versionB = '';
   let workspaceB = '';
@@ -403,9 +404,11 @@ describe('回归：跨空间写入必须全面被拒（按 id 逐个试探）', 
       .attach('file', fakeWav(), { filename: 'b.wav', contentType: 'audio/wav' })
       .expect(201);
 
+    audioB = audio.body.data.id as string;
+
     clipB = (
       await request(app)
-        .post(`/api/audio/${audio.body.data.id}/clips`)
+        .post(`/api/audio/${audioB}/clips`)
         .set(auth(b))
         .send({ startMs: 0, endMs: 800 })
         .expect(201)
@@ -514,6 +517,27 @@ describe('回归：跨空间写入必须全面被拒（按 id 逐个试探）', 
     );
     await rejected('列乙空间的食谱', () =>
       request(app).get('/api/recipes').query({ workspaceId: workspaceB }).set(auth(a)),
+    );
+  });
+
+  it('甲无法改乙音频的转写分句时间轴', async () => {
+    await rejected('自动对齐乙的音频', () =>
+      request(app).post(`/api/audio/${audioB}/transcript/align`).set(auth(a)).send({ transcript: '抢一句。' }),
+    );
+    await rejected('保存乙音频的分句', () =>
+      request(app)
+        .put(`/api/audio/${audioB}/transcript/segments`)
+        .set(auth(a))
+        .send({ segments: [{ startMs: 0, endMs: 900, text: '被篡改的句子' }] }),
+    );
+    await rejected('改乙的转写原文', () =>
+      request(app)
+        .patch(`/api/audio/${audioB}/transcript`)
+        .set(auth(a))
+        .send({ transcript: '被篡改' }),
+    );
+    await rejected('读乙音频详情（含分句）', () =>
+      request(app).get(`/api/audio/${audioB}`).set(auth(a)),
     );
   });
 

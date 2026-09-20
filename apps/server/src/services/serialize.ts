@@ -10,6 +10,7 @@ import type {
   RecipeVersionDto,
   ResolvedSpec,
   StepDto,
+  TranscriptSegmentDto,
   UserDto,
   VagueItemDto,
   VerificationRunDto,
@@ -180,21 +181,35 @@ export function toIngredientDto(ingredient: {
   };
 }
 
-export function toAudioDto(audio: {
-  id: string;
-  workspaceId: string;
-  recipeId: string;
-  ownerId: string;
-  kind: string;
-  mimeType: string;
-  sizeBytes: number;
-  durationMs: number;
-  peaks: string | null;
-  sha256: string;
-  transcript: string | null;
-  transcriptStatus: string;
-  createdAt: Date;
-}): AudioAttachmentDto {
+export function toAudioDto(
+  audio: {
+    id: string;
+    workspaceId: string;
+    recipeId: string;
+    ownerId: string;
+    kind: string;
+    mimeType: string;
+    sizeBytes: number;
+    durationMs: number;
+    peaks: string | null;
+    sha256: string;
+    transcript: string | null;
+    transcriptStatus: string;
+    transcriptUpdatedAt: Date | null;
+    createdAt: Date;
+  },
+  segments?: {
+    id: string;
+    audioAttachmentId: string;
+    orderIndex: number;
+    startMs: number;
+    endMs: number;
+    text: string;
+    edited: boolean;
+    createdAt: Date;
+    updatedAt: Date;
+  }[],
+): AudioAttachmentDto {
   return {
     id: audio.id,
     workspaceId: audio.workspaceId,
@@ -208,8 +223,34 @@ export function toAudioDto(audio: {
     sha256: audio.sha256,
     transcript: audio.transcript,
     transcriptStatus: audio.transcriptStatus as TranscriptStatus,
+    transcriptUpdatedAt: audio.transcriptUpdatedAt ? audio.transcriptUpdatedAt.toISOString() : null,
     createdAt: audio.createdAt.toISOString(),
     url: `/api/audio/${audio.id}/stream`,
+    ...(segments ? { segments: segments.map(toSegmentDto) } : {}),
+  };
+}
+
+export function toSegmentDto(segment: {
+  id: string;
+  audioAttachmentId: string;
+  orderIndex: number;
+  startMs: number;
+  endMs: number;
+  text: string;
+  edited: boolean;
+  createdAt: Date;
+  updatedAt: Date;
+}): TranscriptSegmentDto {
+  return {
+    id: segment.id,
+    audioAttachmentId: segment.audioAttachmentId,
+    orderIndex: segment.orderIndex,
+    startMs: segment.startMs,
+    endMs: segment.endMs,
+    text: segment.text,
+    edited: segment.edited,
+    createdAt: segment.createdAt.toISOString(),
+    updatedAt: segment.updatedAt.toISOString(),
   };
 }
 

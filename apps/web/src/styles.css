@@ -217,6 +217,58 @@ a {
   pointer-events: none;
 }
 
+/* 分句对齐：每句一格底色，播放中的那句高亮 */
+.froa-wave-segments-mode {
+  cursor: pointer;
+}
+
+.froa-wave-segment {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  border-right: 1px dashed rgba(140, 74, 36, 0.25);
+  background: rgba(47, 107, 176, 0.06);
+  pointer-events: none;
+}
+
+.froa-wave-segment.is-active {
+  background: rgba(47, 107, 176, 0.2);
+}
+
+/* 句间可拖手柄：加大命中区，视觉上是一根粗竖条。
+   pointer-events 必须为 none —— 指针事件统一由波形容器处理（命中检测在 JS 里），
+   否则事件目标是手柄本身，setPointerCapture 落到容器上后 move 事件收不到。 */
+.froa-wave-handle {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 14px;
+  transform: translateX(-50%);
+  cursor: ew-resize;
+  z-index: 5;
+  touch-action: none;
+  pointer-events: none;
+}
+
+.froa-wave-handle::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 12%;
+  bottom: 12%;
+  width: 4px;
+  transform: translateX(-50%);
+  border-radius: 2px;
+  background: rgba(140, 74, 36, 0.75);
+  transition: background 0.12s ease, width 0.12s ease;
+}
+
+.froa-wave-handle:hover::before,
+.froa-wave-handle.is-dragging::before {
+  background: var(--froa-heat);
+  width: 6px;
+}
+
 .froa-wave-playhead {
   position: absolute;
   top: 0;
@@ -471,4 +523,81 @@ a {
 
 body.has-player .froa-main {
   padding-bottom: 6rem;
+}
+
+/* ---------------- 转写分句时间轴 ---------------- */
+
+.froa-segments {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  max-height: 26rem;
+  overflow-y: auto;
+  padding-right: 0.25rem;
+}
+
+.froa-segment-row {
+  display: grid;
+  grid-template-columns: 132px minmax(0, 1fr);
+  gap: 0.6rem;
+  align-items: start;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid var(--froa-border);
+  border-radius: 10px;
+  background: var(--froa-surface);
+  transition: box-shadow 0.15s ease, border-color 0.15s ease;
+}
+
+.froa-segment-row.is-active {
+  border-color: var(--froa-time);
+  box-shadow: 0 0 0 2px rgba(47, 107, 176, 0.25);
+  background: #f4f8fd;
+}
+
+.froa-segment-time {
+  display: flex;
+  align-items: center;
+  gap: 0.15rem;
+  font-variant-numeric: tabular-nums;
+  font-size: 0.78rem;
+  color: var(--froa-text-soft);
+  line-height: 1.35;
+}
+
+.froa-segment-clock {
+  white-space: nowrap;
+}
+
+.froa-segment-body {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 0;
+}
+
+.froa-segment-text-readonly {
+  font-size: 1rem;
+  line-height: 1.7;
+}
+
+.froa-segment-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  flex-wrap: wrap;
+}
+
+.froa-nudge-group {
+  display: inline-flex;
+  gap: 0.15rem;
+}
+
+@media (max-width: 640px) {
+  .froa-segment-row {
+    grid-template-columns: 1fr;
+  }
+
+  .froa-segment-time {
+    justify-content: flex-start;
+  }
 }

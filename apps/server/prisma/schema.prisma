@@ -215,6 +215,8 @@ model AudioAttachment {
   sha256           String
   transcript       String?
   transcriptStatus String    @default("none")
+  /// 分句对齐结果上一次被保存的时间；用于分句编辑的乐观锁（整条音频本身没有 updatedAt）
+  transcriptUpdatedAt DateTime?
   deletedAt        DateTime?
   createdAt        DateTime  @default(now())
 
@@ -222,9 +224,31 @@ model AudioAttachment {
   recipe    Recipe    @relation(fields: [recipeId], references: [id], onDelete: Cascade)
   owner     User      @relation("AudioOwner", fields: [ownerId], references: [id])
   clips     AudioClip[]
+  segments  TranscriptSegment[]
 
   @@index([recipeId, kind])
   @@index([recipeId, transcriptStatus])
+}
+
+/// 转写分句：每一句落到对应的音频区间。
+/// 来源有两种：ASR（whisper/openai）直接给出时间戳；人工转写经"自动对齐"按字数+静音均分。
+/// 边界允许整理者拖动修正（见 PUT /audio/:id/transcript/segments），手工改过的句子 edited=true。
+model TranscriptSegment {
+  id                String   @id
+  audioAttachmentId String
+  orderIndex        Int
+  startMs           Int
+  endMs             Int
+  text              String
+  /// 自动对齐 / ASR 给出 vs 整理者手动修正过边界或文字
+  edited            Boolean  @default(false)
+  createdAt         DateTime @default(now())
+  updatedAt         DateTime @updatedAt
+
+  audio AudioAttachment @relation(fields: [audioAttachmentId], references: [id], onDelete: Cascade)
+
+  @@unique([audioAttachmentId, orderIndex])
+  @@index([audioAttachmentId])
 }
 
 model AudioClip {
